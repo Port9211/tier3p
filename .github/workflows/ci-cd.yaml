@@ -6,9 +6,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REGISTRY: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
-  FRONTEND_IMAGE: ${{ env.ECR_REGISTRY }}/react-frontend
-  BACKEND_IMAGE: ${{ env.ECR_REGISTRY }}/node-backend
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   build-and-deploy:
@@ -16,6 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Install Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      # Configure AWS credentials for Terraform & EKS
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -23,19 +29,46 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # Run Terraform
+      - name: Terraform Init & Apply
+        working-directory: infra/terraform
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+      # Get Terraform Outputs into Environment Variables
+      - name: Get Terraform Outputs
+        id: tf_outputs
+        working-directory: infra/terraform
+        run: |
+          echo "ECR_FRONTEND=$(terraform output -raw ecr_frontend)" >> $GITHUB_ENV
+          echo "ECR_BACKEND=$(terraform output -raw ecr_backend)" >> $GITHUB_ENV
+          echo "REDIS_ENDPOINT=$(terraform output -raw redis_primary_endpoint)" >> $GITHUB_ENV
+
+      # Login to Amazon ECR
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Build & Push Frontend
       - name: Build frontend
         run: |
-          docker build -t $FRONTEND_IMAGE:latest ./frontend
-          docker push $FRONTEND_IMAGE:latest
+          docker build -t $ECR_FRONTEND:latest ./frontend
+          docker push $ECR_FRONTEND:latest
 
+      # Build & Push Backend
       - name: Build backend
         run: |
-          docker build -t $BACKEND_IMAGE:latest ./backend
-          docker push $BACKEND_IMAGE:latest
+          docker build -t $ECR_BACKEND:latest ./backend
+          docker push $ECR_BACKEND:latest
 
+      # Replace placeholders in Kubernetes manifests
+      - name: Replace placeholders in manifests
+        run: |
+          sed -i "s#<ECR_FRONTEND_URL>#$ECR_FRONTEND#g" infra/k8s-manifests/frontend-deployment.yaml
+          sed -i "s#<ECR_BACKEND_URL>#$ECR_BACKEND#g" infra/k8s-manifests/backend-deployment.yaml
+          sed -i "s#<REDIS_ENDPOINT>#$REDIS_ENDPOINT#g" infra/k8s-manifests/backend-deployment.yaml
+
+      # Deploy to EKS
       - name: Deploy to EKS
         run: |
           aws eks update-kubeconfig --region $AWS_REGION --name my-eks-cluster
