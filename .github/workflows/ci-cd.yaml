@@ -1,0 +1,42 @@
+name: CI-CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
+  FRONTEND_IMAGE: ${{ env.ECR_REGISTRY }}/react-frontend
+  BACKEND_IMAGE: ${{ env.ECR_REGISTRY }}/node-backend
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build frontend
+        run: |
+          docker build -t $FRONTEND_IMAGE:latest ./frontend
+          docker push $FRONTEND_IMAGE:latest
+
+      - name: Build backend
+        run: |
+          docker build -t $BACKEND_IMAGE:latest ./backend
+          docker push $BACKEND_IMAGE:latest
+
+      - name: Deploy to EKS
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name my-eks-cluster
+          kubectl apply -f infra/k8s-manifests/
